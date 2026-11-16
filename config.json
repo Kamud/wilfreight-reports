@@ -1,16 +1,15 @@
 {
   "_about": "Mappings from Wilogix and Vuma names to the names used in the daily truck report workbook. Edit here when a name changes; spelling must match the workbook lists exactly.",
-
   "bakers_inn_rate_per_km": 0.9,
-  "rate_per_km_customers": ["Bakers Inn"],
-
+  "rate_per_km_customers": [
+    "Bakers Inn"
+  ],
   "customer_map": {
     "Bolton": "Bolton Logistics",
     "Sabithon": "Sabi Thorn",
     "Kwekwe Potatoes Distributors": "Kwekwe Potato Distributors",
     "Mike": "Venture Sports Hub"
   },
-
   "wallet_map": {
     "Treasurer cash": "Head Office Treasury",
     "Cuthbert Kamudyariwa (USD cash)": "Cuthbert (Manager Wallet)",
@@ -22,7 +21,6 @@
     "CBZ Bank Saraquel USD": "CBZ Bank Saraquel USD",
     "W and M Kamudyariwa CBZ": "W and M Kamudyariwa CBZ"
   },
-
   "truck_category_map": {
     "Fuel": "Fuel",
     "Allowances": "Allowances",
@@ -34,7 +32,6 @@
     "Repairs and Maintenance": "Repairs",
     "Other Repairs and Maintenance": "Repairs"
   },
-
   "overhead_category_map": {
     "Salaries and Wages": "Administration pay",
     "Vehicle Licences and Insurance": "Truck insurance (prepaid)",
@@ -56,11 +53,13 @@
     "Unaccounted Expenses and Shortfalls": "Unaccounted Expenses and Shortfalls"
   },
   "overhead_category_default": "Other overheads",
-
   "memo_keyword_overrides": [
-    {"contains": "fuel", "truck_category": "Fuel", "overhead_category": "Fuel (Admin Vehicles)"}
+    {
+      "contains": "fuel",
+      "truck_category": "Fuel",
+      "overhead_category": "Fuel (Admin Vehicles)"
+    }
   ],
-
   "fuel_treatment_fallback": {
     "_about": "Used only when the Client rules sheet cannot be read. Values: 'Deduct by credit note', 'Client funds, ignore', 'We fund', 'Charged on invoice', 'Not set'.",
     "Bakers Inn": "Deduct by credit note",
@@ -74,5 +73,11 @@
     "Chunks": "Client funds, ignore",
     "Pro Bottlers": "Charged on invoice",
     "Trade Kings": "We fund"
-  }
+  },
+  "prepaid_insurance_keywords": [
+    "insur",
+    "licen",
+    "licence",
+    "license"
+  ]
 }

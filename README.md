@@ -61,6 +61,13 @@ e as (
   from expenses e left join expense_categories c on c.id=e.category_id left join wallets w on w.id=e.wallet_id left join requests r on r.id=e.request_id
   where e.organisation_id=(select id from o) and e.expense_date between :start and :end
     and not exists (select 1 from ledger_entries x where x.reverses_entry_id=e.ledger_entry_id)
+  union all
+  -- an expense from an earlier month reversed in this period: the cash came back, so it goes in as a negative line
+  select rv.entry_date, coalesce(e2.truck_reg,''), coalesce(c2.name,''), (-rv.amount_cents/100.0)::numeric(12,2), coalesce(tw.name,''),
+    'Correction: expense dated '||to_char(orig.entry_date,'DD Mon YYYY')||' was reversed in Vuma, so the cash came back', '', 'not_needed', 'clean', rv.created_at
+  from ledger_entries rv join ledger_entries orig on orig.id=rv.reverses_entry_id left join wallets tw on tw.id=rv.to_wallet_id
+    left join expenses e2 on e2.ledger_entry_id=orig.id left join expense_categories c2 on c2.id=e2.category_id
+  where rv.organisation_id=(select id from o) and rv.entry_date between :start and :end and orig.entry_date < :start
 ),
 l as (
   select le.entry_date d, le.type, coalesce(fw.name,'') fw, coalesce(tw.name,'') tw, (le.amount_cents/100.0)::numeric(12,2) amt, coalesce(le.counterparty_name,'') cp,
@@ -77,7 +84,8 @@ select 'LEDGER', string_agg(concat_ws('|', d, type, fw, tw, amt, cp, memo), E'\n
 
 - Revenue counts on the trip completion date. Amount used, in order: invoiced amount, trip revenue, estimated revenue,
   then 0.9 x logged km for Bakers Inn. Anything else is written as 0 and listed as an exception.
-- Cash expenses come from Vuma. Reversed and declined expenses are left out.
+- Cash expenses come from Vuma. Reversed and declined expenses are left out. An expense from an earlier month that is reversed
+  in this period goes in as a negative line, because the cash came back this month.
 - Fuel logs marked as paid by the client become Expense Log lines deducted from the customer only when the client's
   fuel treatment is "Deduct by credit note". Fuel we paid for is already a Vuma cash expense and is not added again.
 - Receipts are Vuma collections. Transfers are Vuma transfers and payouts; payouts with the same date, accounts and note are combined.

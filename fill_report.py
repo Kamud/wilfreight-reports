@@ -193,6 +193,8 @@ def main():
     cash_total = 0.0
     for d, truck, cat, amt, wallet, memo, req, rat, chk in exp_rows:
         amt = to_num(amt) or 0.0
+        if amt < 0:
+            flag('Correction: an earlier month\'s expense was reversed in Vuma this month (cash came back)', f'{d} {cat} ${amt:.2f}')
         if rat == 'declined':
             flag('Declined Vuma expense left out', f'{d} {cat} ${amt:.2f} {memo}')
             continue
@@ -224,6 +226,11 @@ def main():
             if new_cat is None:
                 new_cat = cfg['overhead_category_default']
                 flag('Overhead category not mapped, put under Other overheads', f'{d} {cat} ${amt:.2f} {memo}')
+            if new_cat == 'Truck insurance (prepaid)':
+                words = cfg.get('prepaid_insurance_keywords', [])
+                if words and not any(w in (memo or '').lower() for w in words):
+                    new_cat = cfg['overhead_category_default']
+                    flag('Paid under licences and insurance but the description is not insurance, put under Other overheads (fix the category in Vuma)', f'{d} ${amt:.2f} {memo}')
             applies = 'Overhead'
         if chk and chk not in ('clean',):
             flag('Vuma expense not yet clean (' + chk.replace('_', ' ') + ')', f'{d} {applies} {cat} ${amt:.2f} {memo}')
