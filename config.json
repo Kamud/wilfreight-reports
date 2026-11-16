@@ -1,0 +1,78 @@
+{
+  "_about": "Mappings from Wilogix and Vuma names to the names used in the daily truck report workbook. Edit here when a name changes; spelling must match the workbook lists exactly.",
+
+  "bakers_inn_rate_per_km": 0.9,
+  "rate_per_km_customers": ["Bakers Inn"],
+
+  "customer_map": {
+    "Bolton": "Bolton Logistics",
+    "Sabithon": "Sabi Thorn",
+    "Kwekwe Potatoes Distributors": "Kwekwe Potato Distributors",
+    "Mike": "Venture Sports Hub"
+  },
+
+  "wallet_map": {
+    "Treasurer cash": "Head Office Treasury",
+    "Cuthbert Kamudyariwa (USD cash)": "Cuthbert (Manager Wallet)",
+    "Kudzwai Mutete (USD cash)": "Kudzwai (Supervisor Wallet)",
+    "Willfred Kamudyariwa (USD cash)": "Willfred (Director Wallet)",
+    "Willfred Kamudyariwa (EcoCash USD)": "Willfred (EcoCash USD)",
+    "William Zharare (USD cash)": "William Zharare (cash)",
+    "In transit (USD)": "In transit (Vuma)",
+    "CBZ Bank Saraquel USD": "CBZ Bank Saraquel USD",
+    "W and M Kamudyariwa CBZ": "W and M Kamudyariwa CBZ"
+  },
+
+  "truck_category_map": {
+    "Fuel": "Fuel",
+    "Allowances": "Allowances",
+    "Remuneration": "Remuneration",
+    "Law Enforcements": "Law Enforcements",
+    "Compliancy": "Compliancy",
+    "Tolls and Parking": "Tolls and Parking",
+    "Commission": "Commission",
+    "Repairs and Maintenance": "Repairs",
+    "Other Repairs and Maintenance": "Repairs"
+  },
+
+  "overhead_category_map": {
+    "Salaries and Wages": "Administration pay",
+    "Vehicle Licences and Insurance": "Truck insurance (prepaid)",
+    "Fuel and Mileage": "Fuel (Admin Vehicles)",
+    "Fuel": "Fuel (Admin Vehicles)",
+    "Repairs and Maintenance": "Other Repairs & Maintenance",
+    "Other Repairs and Maintenance": "Other Repairs & Maintenance",
+    "Other": "Other overheads",
+    "Car Wash": "Car Wash",
+    "Subsistence (Admin)": "Subsistence (Admin)",
+    "Telephone": "Telephone",
+    "Rent and Rates": "Rent & Rates",
+    "IT and Internet": "IT & Internet",
+    "Printing and Stationery": "Printing & Stationery",
+    "Public Commuting": "Public Commuting",
+    "Fleet Management Tools": "Fleet Management Tools",
+    "Fleet Storage": "Fleet Storage",
+    "Corporate Social Responsibility": "Corporate Social Responsibility",
+    "Unaccounted Expenses and Shortfalls": "Unaccounted Expenses and Shortfalls"
+  },
+  "overhead_category_default": "Other overheads",
+
+  "memo_keyword_overrides": [
+    {"contains": "fuel", "truck_category": "Fuel", "overhead_category": "Fuel (Admin Vehicles)"}
+  ],
+
+  "fuel_treatment_fallback": {
+    "_about": "Used only when the Client rules sheet cannot be read. Values: 'Deduct by credit note', 'Client funds, ignore', 'We fund', 'Charged on invoice', 'Not set'.",
+    "Bakers Inn": "Deduct by credit note",
+    "National Foods": "Deduct by credit note",
+    "Wire Masters": "Deduct by credit note",
+    "Varun snacks": "Deduct by credit note",
+    "Varun Beverages": "Deduct by credit note",
+    "Sabithon": "Client funds, ignore",
+    "Dendairy": "Client funds, ignore",
+    "Bolton": "Client funds, ignore",
+    "Chunks": "Client funds, ignore",
+    "Pro Bottlers": "Charged on invoice",
+    "Trade Kings": "We fund"
+  }
+}
