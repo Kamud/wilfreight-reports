@@ -80,6 +80,14 @@ union all
 select 'LEDGER', string_agg(concat_ws('|', d, type, fw, tw, amt, cp, memo), E'\n' order by d, seq) from l;
 ```
 
+## Truck by Day tab
+
+Part of the template, so every run includes it; `fill_report.py` needs no change. One row per truck, one column per
+day, with a month-to-date column. The yellow cell switches the measure between Revenue, Trip costs and repairs, and
+Contribution (revenue less trip costs and repairs). It reads only the Trips and Expense Log tabs, counts days up to
+the as-at date, and its "Check vs Truck Summary" cell must show 0 for all three measures. Running costs and company
+overheads are monthly accruals and are not spread across days there; see Truck Summary and Daily Trend.
+
 ## Rules the fill applies
 
 - Revenue counts on the trip completion date. Amount used, in order: invoiced amount, trip revenue, estimated revenue,
