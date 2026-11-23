@@ -104,3 +104,30 @@ overheads are monthly accruals and are not spread across days there; see Truck S
 - Opening balances (Cash & Banks) and customer balances at month start (Customers), once a month in the template.
 - Truck running costs and fixed overheads on the Assumptions tab.
 - Anything not recorded in Wilogix or Vuma will not appear. Record it at the source rather than in the workbook.
+
+## Weekly report (Monday morning)
+
+Covers Monday to Sunday of the week just ended, compared with the week before. It applies no rules of its own:
+it summarises daily-report workbooks made by `fill_report.py`, so the daily and weekly figures always agree.
+
+Dates: `:week_end` is yesterday (Sunday), `:week_start` is 6 days earlier, and the comparison week is the 7 days before that.
+The fortnight is `:week_start - 7` to `:week_end`.
+
+1. For each month the fortnight touches (one, or two across a month end):
+   - Extract with the two queries above. For the month holding `:week_end`, use `:start` = its first day and `:end` = `:week_end`.
+     For an earlier month, use the whole month. Save into `data/<YYYY-MM>/` and write `fuel_rules.json` there as for the daily run.
+   - `python3 fill_report.py --data data/<YYYY-MM> --month-start <YYYY-MM-01> --fuel-rules data/<YYYY-MM>/fuel_rules.json --out "out/weekly/month <YYYY-MM>.xlsx" > out/weekly/summary_<YYYY-MM>.json`
+   - Freeze it at its last day, BEFORE recalculating, so a Monday run does not accrue Monday's costs:
+     `python3 weekly_report.py freeze --workbook "out/weekly/month <YYYY-MM>.xlsx" --as-at <:week_end, or month end for an earlier month>`
+   - Recalculate it with the xlsx skill's `recalc.py` (zero errors).
+2. `python3 weekly_report.py build --week-end <:week_end> --monthly "out/weekly/month <YYYY-MM>.xlsx" [--monthly "out/weekly/month <earlier YYYY-MM>.xlsx"] --summary out/weekly/summary_<YYYY-MM of :week_end>.json --out "out/Saraquel Weekly Truck Report <:week_end>.xlsx"`
+3. Recalculate the weekly workbook with `recalc.py` (zero errors).
+4. Check: the "should be 0" cells on By Truck and Costs are 0. The month workbook checks from the daily run also apply.
+
+Tabs: Week Summary (this week, last week, change, change %, month to date at Sunday), By Truck, By Customer, By Day,
+Costs (by category and the 10 largest costs), Exceptions (open at Sunday; the ones dated this week are marked),
+and the data tabs it calculates from. The week dates are blue inputs on Week Summary, so the tabs can be re-cut.
+
+Limits: last week's cash and customer balances are worked back from Sunday's balances using this week's collections,
+cash spent and credit notes. When the comparison week falls in the previous month, that month uses the current
+template's running-cost and overhead assumptions.
