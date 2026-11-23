@@ -19,7 +19,8 @@ Two steps:
            --summary out/summary_2026-11.json \
            --out "out/Saraquel Weekly Truck Report 2026-11-22.xlsx"
 
-Recalculate the weekly workbook afterwards; it holds formulas over its data tabs.
+Recalculate the weekly workbook afterwards; it holds formulas over its (hidden) data tabs, and
+its hidden Checks tab must show 0 on every line.
 """
 import argparse, json, re, sys
 from datetime import date, datetime, timedelta
@@ -122,6 +123,8 @@ def read_monthly(path):
             m['cash_total'] = float(cash.cell(r, 2).value or 0)
             break
     m['owed_total'] = float(wb['Customers']['B6'].value or 0)
+    cu = wb['Customers']
+    m['owed'] = {cu.cell(r, 1).value: float(cu.cell(r, 2).value or 0) for r in range(7, 47) if cu.cell(r, 1).value}
     ts = wb['Truck Summary']
     m['mtd'] = {ts.cell(4, c).value: ts.cell(5, c).value for c in range(2, 10)}
     return m
@@ -172,6 +175,28 @@ def write_table(ws, header, data, formats):
 
 
 # ---------------------------------------------------------------- build
+def fm(x):
+    """Money for sentences: whole dollars from $100 up."""
+    s = f'${abs(x):,.0f}' if abs(x) >= 100 else f'${abs(x):,.2f}'
+    return ('-' if x < 0 else '') + s
+
+
+def signed(x):
+    return ('+' if x >= 0 else '-') + fm(abs(x))
+
+
+ATTENTION = [
+    # (match in exception type, short label, action)
+    ('Completed trip with no revenue', 'trips completed with no revenue in Wilogix', 'enter the invoice or trip revenue in Wilogix'),
+    ('no fuel treatment set', 'client-paid fuel lines with no fuel rule (not counted)', 'set the fuel treatment on the Client rules sheet'),
+    ('client rule is', 'client fuel lines that conflict with the client rule', 'check the fuel log or the rule'),
+    ('not yet clean', 'Vuma expenses not yet clean', 'clear them in Vuma'),
+    ('Category changed because of the description', 'expenses whose category was changed from the description', 'fix the category in Vuma'),
+    ('New customer added', 'new customers added', 'enter their opening balances'),
+    ('New account added', 'new accounts added', 'enter their opening balances'),
+]
+
+
 def cmd_build(a):
     week_end = to_date(a.week_end)
     if week_end.weekday() != 6:
@@ -181,40 +206,83 @@ def cmd_build(a):
 
     months = [read_monthly(p) for p in a.monthly]
     months.sort(key=lambda m: m['month_start'])
-    cur = next((m for m in months if m['month_start'] <= week_end <= m['month_start'].replace(day=m['days_in_month'])), None)
+    month_end = lambda m: m['month_start'].replace(day=m['days_in_month'])
+    cur = next((m for m in months if m['month_start'] <= week_end <= month_end(m)), None)
     if cur is None:
         raise SystemExit('No monthly workbook covers the week-end date')
     if cur['as_at'] != week_end:
         raise SystemExit(f'{cur["path"]} is as at {cur["as_at"]}, not {week_end}: run the freeze step before recalculating')
     for d in (p_start, w_start, week_end):
-        if not any(m['month_start'] <= d <= m['month_start'].replace(day=m['days_in_month']) for m in months):
+        if not any(m['month_start'] <= d <= month_end(m) for m in months):
             raise SystemExit(f'No monthly workbook covers {d}: pass the other month with a second --monthly')
     for m in months:
-        if m is not cur and m['as_at'] < m['month_start'].replace(day=m['days_in_month']):
+        if m is not cur and m['as_at'] < month_end(m):
             raise SystemExit(f'{m["path"]} stops at {m["as_at"]}; the earlier month must run to its last day')
 
     inside = lambda d: d is not None and p_start <= d <= week_end
+    wk = lambda d: 'W' if d >= w_start else 'P'
     trips = sorted([t for m in months for t in m['trips'] if inside(t[0])], key=lambda x: (x[0], x[1] or ''))
     costs = sorted([c for m in months for c in m['costs'] if inside(c[0])], key=lambda x: x[0])
     receipts = sorted([r for m in months for r in m['receipts'] if inside(r[0])], key=lambda x: x[0])
     daily = sorted([d for m in months for d in m['daily'] if inside(d[0])], key=lambda x: x[0])
-    truck_days = []
-    for m in months:
-        for i in range(m['days_in_month']):
-            d = m['month_start'] + timedelta(days=i)
-            if inside(d) and d <= m['as_at']:
-                for name, status, monthly in m['trucks']:
-                    truck_days.append([d, name, round(monthly / m['days_in_month'], 6)])
-    trucks = cur['trucks']
     summary = json.load(open(a.summary, encoding='utf-8')) if a.summary else {}
+    all_trips = {t[1]: t for m in months for t in m['trips']}
 
+    # ---------- figures worked out here only to write the sentences (the page itself uses formulas)
+    agg = {k: {'W': 0.0, 'P': 0.0} for k in ('rev', 'trip', 'rep', 'run', 'oh')}
+    by_cust, by_cat, by_truck = {}, {}, {}
+    for t in trips:
+        agg['rev'][wk(t[0])] += t[6]
+        by_cust.setdefault(t[3] or '(none)', {'W': 0.0, 'P': 0.0})[wk(t[0])] += t[6]
+        by_truck.setdefault(t[2], {'W': 0.0, 'P': 0.0})
+    for c in costs:
+        if c[8] == 'Truck':
+            key = 'rep' if c[2] == 'Repairs' else 'trip'
+            agg[key][wk(c[0])] += c[3]
+            if key == 'trip':
+                by_cat.setdefault(c[2], {'W': 0.0, 'P': 0.0})[wk(c[0])] += c[3]
+            by_truck.setdefault(c[1], {'W': 0.0, 'P': 0.0})
+    for d in daily:
+        agg['run'][wk(d[0])] += d[5]
+        agg['oh'][wk(d[0])] += d[6]
+    net = {k: agg['rev'][k] - agg['trip'][k] - agg['rep'][k] - agg['run'][k] - agg['oh'][k] for k in 'WP'}
+    delta = {k: agg[k]['W'] - agg[k]['P'] for k in agg}
+    zero_w = [t for t in trips if wk(t[0]) == 'W' and not t[6]]
+
+    def top_changes(d, n=2):
+        items = sorted(((k, v['W'] - v['P']) for k, v in d.items()), key=lambda x: -abs(x[1]))
+        return [f'{k} {signed(v)}' for k, v in items[:n] if abs(v) >= 0.5]
+
+    def top_lines(pred, n=2, field=3):
+        ls = sorted([c for c in costs if wk(c[0]) == 'W' and pred(c) and c[field]], key=lambda x: -x[field])[:n]
+        out = []
+        for c in ls:
+            what = c[1] if c[8] == 'Truck' else c[2]
+            desc = (c[5] or '').split('(')[0].strip()
+            out.append(f'{what} {fm(c[field])}' + (f' ({desc[:22].lower()})' if desc and c[8] == 'Truck' else ''))
+        return out
+
+    reasons = {
+        'rev': ', '.join(top_changes(by_cust)) + (f'; {len(zero_w)} trip(s) not yet valued' if zero_w else ''),
+        'trip': '; '.join(top_changes(by_cat)),
+        'rep': ', '.join(top_lines(lambda c: c[8] == 'Truck' and c[2] == 'Repairs')) if agg['rep']['W'] else '',
+        'run': 'Fixed daily accrual' if abs(delta['run']) < 0.01 else 'Daily accrual; months of different length',
+        'oh': ', '.join(top_lines(lambda c: c[8] == 'Overhead', field=7)),
+    }
+    names = {'rev': 'revenue', 'trip': 'trip costs', 'rep': 'repairs', 'run': 'running costs', 'oh': 'overheads'}
+    effects = sorted(((k, delta[k] if k == 'rev' else -delta[k]) for k in names), key=lambda x: -abs(x[1]))
+    drivers = [f"{names[k]} {'rose' if delta[k] > 0 else 'fell'} {fm(abs(delta[k]))}" for k, e in effects[:2] if abs(e) >= 1]
+    headline = (f'Net {"profit" if net["W"] >= 0 else "loss"} of {fm(abs(net["W"]))} this week, against a '
+                f'{"profit" if net["P"] >= 0 else "loss"} of {fm(abs(net["P"]))} last week'
+                + (f': {drivers[0]}' + (f' and {drivers[1]}' if len(drivers) > 1 else '') + '.' if drivers else '.'))
+
+    # ---------- workbook
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = 'Week Summary'
-    sheets = {n: wb.create_sheet(n) for n in ['By Truck', 'By Customer', 'By Day', 'Costs', 'Exceptions',
-                                              'Trips data', 'Costs data', 'Receipts data', 'Daily data', 'Truck days']}
+    ws.title = 'Weekly Report'
+    data_names = ['Trips data', 'Costs data', 'Receipts data', 'Daily data', 'Checks']
+    sheets = {n: wb.create_sheet(n) for n in data_names}
 
-    # ---- data tabs (values copied from the daily-report workbooks)
     write_table(sheets['Trips data'], ['Completed date', 'Trip #', 'Truck', 'Customer', 'Route', 'Invoice #', 'Revenue ($)', 'Basis', 'Km'],
                 trips, [DATE, None, None, None, None, None, MONEY, None, NUM])
     write_table(sheets['Costs data'], ['Date', 'Applies to', 'Category', 'Amount ($)', 'Paid from', 'Description', 'Ref',
@@ -225,454 +293,383 @@ def cmd_build(a):
     write_table(sheets['Daily data'], ['Date', 'Revenue ($)', 'Trip costs ($)', 'Repairs ($)', 'Contribution ($)', 'Running costs ($)',
                                        'Overheads ($)', 'Net profit ($)', 'Cumulative MTD ($)', 'Collected ($)'],
                 daily, [DATE] + [MONEY] * 9)
-    write_table(sheets['Truck days'], ['Date', 'Truck', 'Running cost accrued ($)'], truck_days, [DATE, None, MONEY])
-    for n, w in (('Trips data', [16, 11, 11, 24, 34, 11, 12, 10, 8]), ('Costs data', [16, 14, 26, 11, 26, 50, 12, 12, 10, 18]),
-                 ('Receipts data', [16, 26, 12, 36, 26]), ('Daily data', [16] + [13] * 9), ('Truck days', [16, 22, 14])):
-        set_widths(sheets[n], w)
 
-    T, C, R, D, TD = "'Trips data'", "'Costs data'", "'Receipts data'", "'Daily data'", "'Truck days'"
+    T, C, R, D = "'Trips data'", "'Costs data'", "'Receipts data'", "'Daily data'"
     rng = lambda sh, col: f'{sh}!${col}$2:${col}$5000'
-
-    def win(sh, s, e):
-        return f'{rng(sh, "A")},">="&{s},{rng(sh, "A")},"<="&{e}'
-
-    # ---- Week Summary
-    title(ws, 'Saraquel Logistics: weekly truck report',
-          f'Week {w_start:%a %d %b} to {week_end:%a %d %b %Y}, compared with {p_start:%d %b} to {p_end:%d %b}. USD. '
-          'Built from the daily report workbooks; same rules.')
-    ws['A4'], ws['A5'] = 'This week', 'Last week'
-    for r, (s, e) in ((4, (w_start, week_end)), (5, (p_start, p_end))):
-        ws.cell(r, 2).value = datetime(s.year, s.month, s.day)
-        ws.cell(r, 3).value = datetime(e.year, e.month, e.day)
-        for c in (2, 3):
-            ws.cell(r, c).number_format = DATE
-            ws.cell(r, c).font = Font(name=FONT, color='0000FF')
-    ws['D4'] = 'From (Mon) and to (Sun). Change these two dates to re-cut the tabs; data tabs hold the fortnight only.'
-    ws['D4'].font = Font(name=FONT, italic=True, color='595959', size=9)
-    TW, LW = ('$B$4', '$C$4'), ('$B$5', '$C$5')
-    S = "'Week Summary'!"
-
-    hdr = ['Measure', 'This week', 'Last week', 'Change', 'Change %', 'How it is worked out']
-    for c, h in enumerate(hdr, 1):
-        ws.cell(7, c).value = h
-    style_header(ws, 7, 1, 6)
-
-    def trips_f(col, s, e):
-        return f'=SUMIFS({rng(T, col)},{win(T, s, e)})'
-
-    def cost_f(s, e, extra=''):
-        return f'SUMIFS({rng(C, "D")},{win(C, s, e)}{extra})'
-
+    win = lambda sh, s, e: f'{rng(sh, "A")},">="&{s},{rng(sh, "A")},"<="&{e}'
     TRUCK = ',' + rng(C, 'I') + ',"Truck"'
-    REPAIRS = ',' + rng(C, 'C') + ',"Repairs"'
-    FUEL = ',' + rng(C, 'C') + ',"Fuel"'
+    REP = ',' + rng(C, 'C') + ',"Repairs"'
     PAID = ',' + rng(C, 'E') + ',"<>"'
     CREDIT = ',' + rng(C, 'J') + ',"<>"'
+    WK = {'B': ('$B$3', '$C$3'), 'C': ('$B$4', '$C$4')}
 
-    lines = [
-        # label, formula maker(s, e) or None, fmt, note, kind
-        ('ACTIVITY', None, None, None, 'section'),
-        ('Trips completed', lambda s, e: f'=COUNTIFS({win(T, s, e)})', NUM, 'Trips with a completion date in the week', ''),
-        ('Km logged', lambda s, e: trips_f('I', s, e), NUM, 'Wilogix mileage logs on those trips', ''),
-        ('Trucks that completed a trip', None, NUM, 'Count of trucks with at least one trip (By Truck tab)', 'trucks'),
-        ('PROFIT', None, None, None, 'section'),
-        ('Revenue', lambda s, e: trips_f('G', s, e), MONEY, 'On trip completion date: invoice, else trip revenue, else 0.9 x km for Bakers Inn', ''),
-        ('Trip costs (fuel, allowances, tolls, fines, compliance)', lambda s, e: f'={cost_f(s, e, TRUCK)}-{cost_f(s, e, TRUCK + REPAIRS)}', MONEY, 'Truck lines on the Expense Log except repairs, incl. client fuel deducted by credit note', ''),
-        ('Repairs', lambda s, e: f'={cost_f(s, e, TRUCK + REPAIRS)}', MONEY, 'Truck repair lines', ''),
-        ('Contribution after repairs', 'contrib', MONEY, 'Revenue less trip costs and repairs', 'calc'),
-        ('Truck running costs (accrued)', lambda s, e: f'=SUMIFS({rng(D, "F")},{win(D, s, e)})', MONEY, 'Licence, insurance, Cartrack, depreciation accrued per day from the Assumptions tab', ''),
-        ('Company overheads', lambda s, e: f'=SUMIFS({rng(D, "G")},{win(D, s, e)})', MONEY, 'Fixed overheads accrued per day plus overhead lines logged', ''),
-        ('Net profit', 'net', MONEY, 'Contribution less running costs and overheads', 'calc'),
-        ('Net margin', 'margin', PCT, 'Net profit / revenue', 'calc'),
-        ('KEY RATIOS', None, None, None, 'section'),
-        ('Fuel (all truck fuel)', lambda s, e: f'={cost_f(s, e, TRUCK + FUEL)}', MONEY, 'Cash fuel plus client fuel deducted by credit note', ''),
-        ('Fuel as % of revenue', 'fuelpct', PCT, '', 'calc'),
-        ('Revenue per km', 'rpk', MONEY, '', 'calc'),
-        ('Average revenue per trip', 'rpt', MONEY, '', 'calc'),
-        ('CASH', None, None, None, 'section'),
-        ('Collected from customers', lambda s, e: f'=SUMIFS({rng(R, "C")},{win(R, s, e)})', MONEY, 'Vuma collections', ''),
-        ('Cash spent (paid from an account)', lambda s, e: f'={cost_f(s, e, PAID)}', MONEY, 'Vuma expenses, including prepaid insurance', ''),
-        ('Client fuel deducted by credit note', lambda s, e: f'={cost_f(s, e, CREDIT)}', MONEY, 'Reduces what the customer owes; no cash moves', ''),
-        ('Cash and bank balance at end of week', 'cash', MONEY, 'This week: Cash & Banks total on Sunday. Last week: that, less this week\'s collections, plus this week\'s cash spent', 'bal'),
-        ('Owed by customers at end of week', 'owed', MONEY, 'This week: Customers total on Sunday. Last week: that, less this week\'s revenue, plus collections and credit notes', 'bal'),
-    ]
-    rowof = {}
+    def costs_sum(s, e, extra=''):
+        return f'SUMIFS({rng(C, "D")},{win(C, s, e)}{extra})'
+
+    W = 8  # last column used (H)
+
+    def section(r, text):
+        ws.cell(r, 1).value = text
+        for c in range(1, W + 1):
+            ws.cell(r, c).fill = HEAD_FILL
+            ws.cell(r, c).font = Font(name=FONT, bold=True, color='FFFFFF')
+
+    def heads(r, labels, start=1):
+        for i, h in enumerate(labels):
+            cell = ws.cell(r, start + i)
+            cell.value = h
+            cell.font = Font(name=FONT, bold=True, color='1F3864')
+            cell.fill = SUB_FILL
+            cell.alignment = Alignment(horizontal='left' if i == 0 else 'right', wrap_text=True)
+        for c in range(start + len(labels), W + 1):
+            ws.cell(r, c).fill = SUB_FILL
+
+    def note(r, text, c1=1, c2=W, size=9, italic=True, height=None):
+        ws.cell(r, c1).value = text
+        ws.cell(r, c1).font = Font(name=FONT, size=size, italic=italic, color='595959')
+        ws.cell(r, c1).alignment = Alignment(wrap_text=True, vertical='top')
+        if c2 > c1:
+            ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
+        if height:
+            ws.row_dimensions[r].height = height
+
+    # header
+    ws['A1'] = 'Saraquel Logistics: weekly truck report'
+    ws['A1'].font = Font(name=FONT, bold=True, size=15, color='1F3864')
+    ws['A2'] = f'Week {w_start:%a %d %b} to {week_end:%a %d %b %Y}, compared with {p_start:%d %b} to {p_end:%d %b}. USD.'
+    ws['A2'].font = Font(name=FONT, italic=True, color='595959')
+    for r, lab, (s, e) in ((3, 'This week', (w_start, week_end)), (4, 'Last week', (p_start, p_end))):
+        ws.cell(r, 1).value = lab
+        ws.cell(r, 1).font = Font(name=FONT, size=9, color='595959')
+        for c, d in ((2, s), (3, e)):
+            ws.cell(r, c).value = datetime(d.year, d.month, d.day)
+            ws.cell(r, c).number_format = 'd mmm yyyy'
+            ws.cell(r, c).font = Font(name=FONT, size=9, color='0000FF')
+    ws['A6'] = headline
+    ws['A6'].font = Font(name=FONT, bold=True, size=12)
+    ws['A6'].alignment = Alignment(wrap_text=True, vertical='center')
+    ws.merge_cells('A6:H6')
+    ws.row_dimensions[6].height = 34
+
+    # ---------- profit and loss
     r = 8
-    for label, fm, fmt, note, kind in lines:
+    section(r, 'PROFIT AND LOSS')
+    heads(r + 1, ['', 'This week', 'Last week', 'Change', 'Main reason'])
+    ws.merge_cells(start_row=r + 1, start_column=5, end_row=r + 1, end_column=W)
+    ws.cell(r + 1, 5).alignment = Alignment(horizontal='left')
+    pl = [('Revenue', 'rev', lambda s, e: f'=SUMIFS({rng(T, "G")},{win(T, s, e)})'),
+          ('Trip costs (fuel, tolls, allowances)', 'trip', lambda s, e: f'={costs_sum(s, e, TRUCK)}-{costs_sum(s, e, TRUCK + REP)}'),
+          ('Repairs', 'rep', lambda s, e: f'={costs_sum(s, e, TRUCK + REP)}'),
+          ('Truck running costs', 'run', lambda s, e: f'=SUMIFS({rng(D, "F")},{win(D, s, e)})'),
+          ('Company overheads', 'oh', lambda s, e: f'=SUMIFS({rng(D, "G")},{win(D, s, e)})')]
+    row = {}
+    r += 2
+    for label, key, f in pl:
+        row[key] = r
         ws.cell(r, 1).value = label
-        if kind == 'section':
-            for c in range(1, 7):
-                ws.cell(r, c).fill = SUB_FILL
-                ws.cell(r, c).font = Font(name=FONT, bold=True, color='1F3864')
-            r += 1
-            continue
-        rowof[label] = r
-        if note:
-            ws.cell(r, 6).value = note
-            ws.cell(r, 6).font = Font(name=FONT, size=9, color='595959')
+        for col, (s, e) in WK.items():
+            ws[f'{col}{r}'] = f(s, e)
         r += 1
-    g = lambda label, col: f'{col}{rowof[label]}'
-    for label, fm, fmt, note, kind in lines:
-        if kind == 'section':
-            continue
-        rr = rowof[label]
-        for col, (s, e) in (('B', TW), ('C', LW)):
-            if kind == '':
-                f = fm(s, e)
-            elif kind == 'trucks':
-                f = f"=COUNTIF('By Truck'!{'C' if col == 'B' else 'D'}$6:{'C' if col == 'B' else 'D'}$40,\">0\")"
-            elif fm == 'contrib':
-                f = f'={g("Revenue", col)}-{g("Trip costs (fuel, allowances, tolls, fines, compliance)", col)}-{g("Repairs", col)}'
-            elif fm == 'net':
-                f = f'={g("Contribution after repairs", col)}-{g("Truck running costs (accrued)", col)}-{g("Company overheads", col)}'
-            elif fm == 'margin':
-                f = f'=IFERROR({g("Net profit", col)}/{g("Revenue", col)},"")'
-            elif fm == 'fuelpct':
-                f = f'=IFERROR({g("Fuel (all truck fuel)", col)}/{g("Revenue", col)},"")'
-            elif fm == 'rpk':
-                f = f'=IFERROR({g("Revenue", col)}/{g("Km logged", col)},"")'
-            elif fm == 'rpt':
-                f = f'=IFERROR({g("Revenue", col)}/{g("Trips completed", col)},"")'
-            elif fm == 'cash':
-                f = '=$H$4' if col == 'B' else f'=B{rr}-{g("Collected from customers", "B")}+{g("Cash spent (paid from an account)", "B")}'
-            elif fm == 'owed':
-                f = '=$H$5' if col == 'B' else (f'=B{rr}-{g("Revenue", "B")}+{g("Collected from customers", "B")}'
-                                                f'+{g("Client fuel deducted by credit note", "B")}')
-            ws[f'{col}{rr}'] = f
-            ws[f'{col}{rr}'].number_format = fmt
-        ws[f'D{rr}'] = f'=IF(OR(B{rr}="",C{rr}=""),"",B{rr}-C{rr})'
-        ws[f'D{rr}'].number_format = fmt
-        if fmt == PCT:
-            ws[f'D{rr}'].number_format = '+0.0" pts";-0.0" pts";-'
-            ws[f'D{rr}'] = f'=IF(OR(B{rr}="",C{rr}=""),"",(B{rr}-C{rr})*100)'
-            ws[f'E{rr}'] = ''
-        else:
-            ws[f'E{rr}'] = f'=IF(OR(B{rr}="",C{rr}="",N(C{rr})=0),"",(B{rr}-C{rr})/ABS(C{rr}))'
-            ws[f'E{rr}'].number_format = '+0.0%;-0.0%;-'
-    # Sunday balances (values from the daily workbook, documented)
-    ws['G4'], ws['H4'] = 'Cash & Banks total on Sunday', cur['cash_total']
-    ws['G5'], ws['H5'] = 'Customers owed total on Sunday', cur['owed_total']
-    for c in ('H4', 'H5'):
-        ws[c].number_format = MONEY
-        ws[c].font = Font(name=FONT, color='0000FF')
-    ws['G6'] = f'Source: daily report workbook as at {week_end:%d %b %Y} (Cash & Banks B, Customers B6).'
-    ws['G6'].font = Font(name=FONT, size=9, italic=True, color='595959')
-    # colour the change on cost lines the other way round
-    good_up = ['Trips completed', 'Km logged', 'Trucks that completed a trip', 'Revenue', 'Contribution after repairs', 'Net profit', 'Net margin',
-               'Revenue per km', 'Average revenue per trip', 'Collected from customers', 'Cash and bank balance at end of week']
-    good_down = ['Trip costs (fuel, allowances, tolls, fines, compliance)', 'Repairs', 'Company overheads', 'Fuel as % of revenue', 'Owed by customers at end of week']
+    row['net'] = r
+    ws.cell(r, 1).value = 'Net profit'
+    for col in 'BC':
+        ws[f'{col}{r}'] = f'={col}{row["rev"]}-{col}{row["trip"]}-{col}{row["rep"]}-{col}{row["run"]}-{col}{row["oh"]}'
+    r += 1
+    row['margin'] = r
+    ws.cell(r, 1).value = 'Net margin'
+    for col in 'BC':
+        ws[f'{col}{r}'] = f'=IFERROR({col}{row["net"]}/{col}{row["rev"]},"")'
+    for key in ('rev', 'trip', 'rep', 'run', 'oh', 'net'):
+        rr = row[key]
+        ws[f'D{rr}'] = f'=B{rr}-C{rr}'
+        for col in 'BCD':
+            ws[f'{col}{rr}'].number_format = MONEY
+        if key in reasons and reasons[key]:
+            note(rr, reasons[key], 5, W, size=9, italic=False)
+            ws.cell(rr, 5).alignment = Alignment(wrap_text=True, vertical='center')
+            if len(reasons[key]) > 62:
+                ws.row_dimensions[rr].height = 26
+    rr = row['margin']
+    ws[f'D{rr}'] = f'=IF(OR(B{rr}="",C{rr}=""),"",(B{rr}-C{rr})*100)'
+    for col in 'BC':
+        ws[f'{col}{rr}'].number_format = PCT
+    ws[f'D{rr}'].number_format = '+0.0" pts";-0.0" pts";-'
+    for c in range(1, 5):
+        ws.cell(row['net'], c).font = Font(name=FONT, bold=True)
+        ws.cell(row['net'], c).fill = TOTAL_FILL
+        ws.cell(row['net'], c).border = Border(top=THIN)
     green, red = Font(name=FONT, color='008000'), Font(name=FONT, color='C00000')
-    for label in good_up + good_down:
-        ref = f'D{rowof[label]}:E{rowof[label]}'
-        up, dn = (green, red) if label in good_up else (red, green)
-        ws.conditional_formatting.add(ref, CellIsRule(operator='greaterThan', formula=['0'], font=up))
-        ws.conditional_formatting.add(ref, CellIsRule(operator='lessThan', formula=['0'], font=dn))
-    for label in ('Net profit', 'Revenue'):
-        for c in range(1, 6):
-            ws.cell(rowof[label], c).font = Font(name=FONT, bold=True)
-            ws.cell(rowof[label], c).fill = TOTAL_FILL
+    for key, good_up in (('rev', True), ('trip', False), ('rep', False), ('run', False), ('oh', False), ('net', True), ('margin', True)):
+        ref = f'D{row[key]}'
+        ws.conditional_formatting.add(ref, CellIsRule(operator='greaterThan', formula=['0'], font=green if good_up else red))
+        ws.conditional_formatting.add(ref, CellIsRule(operator='lessThan', formula=['0'], font=red if good_up else green))
 
-    # month-to-date block
-    r = max(rowof.values()) + 2
-    ws.cell(r, 1).value = f'MONTH TO DATE AT {week_end:%d %b %Y}'.upper()
-    for c in range(1, 7):
-        ws.cell(r, c).fill = SUB_FILL
-        ws.cell(r, c).font = Font(name=FONT, bold=True, color='1F3864')
-    r += 1
-    for k, v in cur['mtd'].items():
-        ws.cell(r, 1).value = k
-        ws.cell(r, 2).value = v
-        ws.cell(r, 2).number_format = PCT if 'margin' in (k or '').lower() else MONEY
-        ws.cell(r, 2).font = Font(name=FONT, color='0000FF')
-        r += 1
-    ws.cell(r, 1).value = f'Source: Truck Summary row 5 of the daily report workbook for {cur["month_start"]:%B %Y}, frozen at {week_end:%d %b %Y}.'
-    ws.cell(r, 1).font = Font(name=FONT, size=9, italic=True, color='595959')
+    # ---------- activity and cash
     r += 2
-    ws.cell(r, 1).value = ('Notes: revenue counts on the trip completion date. Running costs and fixed overheads accrue daily, so a quiet Sunday '
-                           'still shows a small loss. The report sees only Wilogix and Vuma: anything not recorded there, depreciation not yet '
-                           'on the Assumptions tab, and Zoho Books are not included.')
-    ws.cell(r, 1).alignment = Alignment(wrap_text=True, vertical='top')
-    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=6)
-    ws.row_dimensions[r].height = 45
-    set_widths(ws, [52, 16, 16, 14, 11, 70, 30, 14])
-    ws.freeze_panes = 'B8'
-
-    # ---- By Truck
-    bt = sheets['By Truck']
-    title(bt, 'By truck: this week against last week', 'Running costs are the daily accrual from the Assumptions tab. Company overheads are not split by truck.')
-    groups = [('Trips', 'trips'), ('Revenue ($)', 'rev'), ('Trip costs ($)', 'cost'), ('Repairs ($)', 'rep'),
-              ('Running costs ($)', 'run'), ('Truck net profit ($)', 'net')]
-    bt['A5'], bt['B5'] = 'Truck', 'Status'
-    col = 3
-    gcols = {}
-    for name, key in groups:
-        bt.cell(4, col).value = name
-        bt.merge_cells(start_row=4, start_column=col, end_row=4, end_column=col + 1)
-        bt.cell(5, col).value, bt.cell(5, col + 1).value = 'This week', 'Last week'
-        gcols[key] = (get_column_letter(col), get_column_letter(col + 1))
-        col += 2
-    bt.cell(5, col).value = 'Change in net profit ($)'
-    style_header(bt, 4, 1, col)
-    style_header(bt, 5, 1, col)
-    first = 6
-    for i, (name, status, _) in enumerate(trucks):
-        rr = first + i
-        bt.cell(rr, 1).value, bt.cell(rr, 2).value = name, status
-        for key, (ca, cb) in gcols.items():
-            for c, (s, e) in ((ca, (S + TW[0], S + TW[1])), (cb, (S + LW[0], S + LW[1]))):
-                if key == 'trips':
-                    f = f'=COUNTIFS({rng(T, "C")},$A{rr},{win(T, s, e)})'
-                elif key == 'rev':
-                    f = f'=SUMIFS({rng(T, "G")},{rng(T, "C")},$A{rr},{win(T, s, e)})'
-                elif key == 'cost':
-                    f = (f'=SUMIFS({rng(C, "D")},{rng(C, "B")},$A{rr},{rng(C, "I")},"Truck",{win(C, s, e)})'
-                         f'-SUMIFS({rng(C, "D")},{rng(C, "B")},$A{rr},{rng(C, "C")},"Repairs",{rng(C, "I")},"Truck",{win(C, s, e)})')
-                elif key == 'rep':
-                    f = f'=SUMIFS({rng(C, "D")},{rng(C, "B")},$A{rr},{rng(C, "C")},"Repairs",{rng(C, "I")},"Truck",{win(C, s, e)})'
-                elif key == 'run':
-                    f = f'=SUMIFS({rng(TD, "C")},{rng(TD, "B")},$A{rr},{win(TD, s, e)})'
-                else:
-                    x = 0 if c == ca else 1
-                    rc, cc, pc, uc = (gcols[k][x] for k in ('rev', 'cost', 'rep', 'run'))
-                    f = f'={rc}{rr}-{cc}{rr}-{pc}{rr}-{uc}{rr}'
-                bt[f'{c}{rr}'] = f
-                bt[f'{c}{rr}'].number_format = NUM if key == 'trips' else MONEY
-        na, nb = gcols['net']
-        bt.cell(rr, col).value = f'={na}{rr}-{nb}{rr}'
-        bt.cell(rr, col).number_format = MONEY
-    last = first + len(trucks) - 1
-    tr = last + 1
-    bt.cell(tr, 1).value = 'FLEET'
-    for c in range(3, col + 1):
-        L = get_column_letter(c)
-        bt.cell(tr, c).value = f'=SUM({L}{first}:{L}{last})'
-        bt.cell(tr, c).number_format = NUM if c in (3, 4) else MONEY
-    for c in range(1, col + 1):
-        bt.cell(tr, c).font = Font(name=FONT, bold=True)
-        bt.cell(tr, c).fill = TOTAL_FILL
-    bt.cell(tr + 1, 1).value = 'Check: fleet net profit before overheads equals Week Summary (should be 0)'
-    bt.cell(tr + 1, col).value = (f'=ROUND({gcols["net"][0]}{tr}-({S}B{rowof["Net profit"]}+{S}B{rowof["Company overheads"]}),2)')
-    bt.conditional_formatting.add(f'{get_column_letter(col)}{first}:{get_column_letter(col)}{last}',
-                                  CellIsRule(operator='lessThan', formula=['0'], font=Font(name=FONT, color='C00000')))
-    set_widths(bt, [22, 11] + [11] * 12 + [14])
-    bt.freeze_panes = 'C6'
-
-    # ---- By Customer
-    bc = sheets['By Customer']
-    title(bc, 'By customer: this week against last week', 'Sorted by revenue this week.')
-    custs = {}
-    for t in trips:
-        custs.setdefault(t[3] or '(none)', [0, 0])
-        custs[t[3] or '(none)'][0 if t[0] >= w_start else 1] += t[6]
-    for rc_ in receipts:
-        custs.setdefault(rc_[1] or '(none)', [0, 0])
-    for c_ in costs:
-        if c_[9]:
-            custs.setdefault(c_[9], [0, 0])
-    order = sorted(custs, key=lambda k: (-custs[k][0], -custs[k][1], k))
-    cgroups = [('Trips', 'trips'), ('Revenue ($)', 'rev'), ('Collected ($)', 'col'), ('Fuel deducted by credit note ($)', 'cn')]
-    bc['A5'] = 'Customer'
-    col = 2
-    ccols = {}
-    for name, key in cgroups:
-        bc.cell(4, col).value = name
-        bc.merge_cells(start_row=4, start_column=col, end_row=4, end_column=col + 1)
-        bc.cell(5, col).value, bc.cell(5, col + 1).value = 'This week', 'Last week'
-        ccols[key] = (get_column_letter(col), get_column_letter(col + 1))
-        col += 2
-    bc.cell(5, col).value = 'Change in revenue ($)'
-    style_header(bc, 4, 1, col)
-    style_header(bc, 5, 1, col)
-    for i, name in enumerate(order):
-        rr = 6 + i
-        bc.cell(rr, 1).value = name
-        for key, (ca, cb) in ccols.items():
-            for c, (s, e) in ((ca, (S + TW[0], S + TW[1])), (cb, (S + LW[0], S + LW[1]))):
-                if key == 'trips':
-                    f = f'=COUNTIFS({rng(T, "D")},$A{rr},{win(T, s, e)})'
-                elif key == 'rev':
-                    f = f'=SUMIFS({rng(T, "G")},{rng(T, "D")},$A{rr},{win(T, s, e)})'
-                elif key == 'col':
-                    f = f'=SUMIFS({rng(R, "C")},{rng(R, "B")},$A{rr},{win(R, s, e)})'
-                else:
-                    f = f'=SUMIFS({rng(C, "D")},{rng(C, "J")},$A{rr},{win(C, s, e)})'
-                bc[f'{c}{rr}'] = f
-                bc[f'{c}{rr}'].number_format = NUM if key == 'trips' else MONEY
-        bc.cell(rr, col).value = f'={ccols["rev"][0]}{rr}-{ccols["rev"][1]}{rr}'
-        bc.cell(rr, col).number_format = MONEY
-    tr = 6 + len(order)
-    bc.cell(tr, 1).value = 'TOTAL'
-    for c in range(2, col + 1):
-        L = get_column_letter(c)
-        bc.cell(tr, c).value = f'=SUM({L}6:{L}{tr - 1})'
-        bc.cell(tr, c).number_format = NUM if c in (2, 3) else MONEY
-    for c in range(1, col + 1):
-        bc.cell(tr, c).font = Font(name=FONT, bold=True)
-        bc.cell(tr, c).fill = TOTAL_FILL
-    set_widths(bc, [30] + [12] * 8 + [14])
-    bc.freeze_panes = 'B6'
-
-    # ---- By Day
-    bd = sheets['By Day']
-    title(bd, 'Day by day: this week beside the same day last week', 'Net profit per day includes the daily accrual of running costs and fixed overheads.')
-    heads = ['Day', 'Date', 'Revenue ($)', 'Trip costs and repairs ($)', 'Net profit ($)', 'Collected ($)',
-             'Date', 'Revenue ($)', 'Trip costs and repairs ($)', 'Net profit ($)', 'Collected ($)', 'Revenue change ($)']
-    bd.cell(4, 2).value, bd.cell(4, 7).value = 'THIS WEEK', 'LAST WEEK'
-    bd.merge_cells('B4:F4')
-    bd.merge_cells('G4:K4')
-    style_header(bd, 4, 1, 12)
-    for c, h in enumerate(heads, 1):
-        bd.cell(5, c).value = h
-    style_header(bd, 5, 1, 12)
-    for i in range(7):
-        rr = 6 + i
-        bd.cell(rr, 1).value = (w_start + timedelta(days=i)).strftime('%A')
-        for base, start in ((2, f'{S}$B$4'), (7, f'{S}$B$5')):
-            dc = get_column_letter(base)
-            bd.cell(rr, base).value = f'={start}+{i}'
-            bd.cell(rr, base).number_format = 'd mmm'
-            vals = [('B',), ('C', 'D'), ('H',), ('J',)]
-            for k, cols_ in enumerate(vals):
-                parts = '+'.join(f'SUMIFS({rng(D, x)},{rng(D, "A")},{dc}{rr})' for x in cols_)
-                cell = bd.cell(rr, base + 1 + k)
-                cell.value = f'={parts}'
-                cell.number_format = MONEY
-        bd.cell(rr, 12).value = f'=C{rr}-H{rr}'
-        bd.cell(rr, 12).number_format = MONEY
-    bd.cell(13, 1).value = 'WEEK'
-    for c in (3, 4, 5, 6, 8, 9, 10, 11, 12):
-        L = get_column_letter(c)
-        bd.cell(13, c).value = f'=SUM({L}6:{L}12)'
-        bd.cell(13, c).number_format = MONEY
-    for c in range(1, 13):
-        bd.cell(13, c).font = Font(name=FONT, bold=True)
-        bd.cell(13, c).fill = TOTAL_FILL
-    set_widths(bd, [12, 9, 12, 14, 12, 12, 9, 12, 14, 12, 12, 13])
-
-    # ---- Costs
-    co = sheets['Costs']
-    title(co, 'Where the money went', 'Truck costs by category, then company overheads. Amounts counted in profit.')
-    for c, h in enumerate(['Category', 'This week ($)', 'Last week ($)', 'Change ($)', 'Change %'], 1):
-        co.cell(4, c).value = h
-    style_header(co, 4, 1, 5)
-    r = 5
-    truck_cats = ['Fuel', 'Allowances', 'Remuneration', 'Law Enforcements', 'Compliancy', 'Tolls and Parking', 'Commission', 'Repairs']
-    seen = [c_[2] for c_ in costs if c_[8] == 'Truck']
-    truck_cats += sorted({x for x in seen if x not in truck_cats})
-
-    def section(label):
-        nonlocal r
-        co.cell(r, 1).value = label
-        for c in range(1, 6):
-            co.cell(r, c).fill = SUB_FILL
-            co.cell(r, c).font = Font(name=FONT, bold=True, color='1F3864')
+    section(r, 'ACTIVITY AND CASH')
+    heads(r + 1, ['', 'This week', 'Last week', 'Change'])
+    r += 2
+    ac = [('Trips completed', lambda s, e: f'=COUNTIFS({win(T, s, e)})', NUM),
+          ('...of which with no value yet', lambda s, e: f'=COUNTIFS({win(T, s, e)},{rng(T, "G")},0)', NUM),
+          ('Km logged', lambda s, e: f'=SUMIFS({rng(T, "I")},{win(T, s, e)})', NUM),
+          ('Collected from customers', lambda s, e: f'=SUMIFS({rng(R, "C")},{win(R, s, e)})', MONEY),
+          ('Cash spent', lambda s, e: f'={costs_sum(s, e, PAID)}', MONEY),
+          ('Client fuel deducted by credit note', lambda s, e: f'={costs_sum(s, e, CREDIT)}', MONEY)]
+    for label, f, fmt in ac:
+        row[label] = r
+        ws.cell(r, 1).value = label
+        for col, (s, e) in WK.items():
+            ws[f'{col}{r}'] = f(s, e)
+            ws[f'{col}{r}'].number_format = fmt
+        ws[f'D{r}'] = f'=B{r}-C{r}'
+        ws[f'D{r}'].number_format = fmt
         r += 1
+    row['cash'], row['owed'] = r, r + 1
+    ws.cell(r, 1).value = 'Cash and bank balance at Sunday'
+    ws[f'B{r}'] = cur['cash_total']
+    ws[f'C{r}'] = f'=B{r}-B{row["Collected from customers"]}+B{row["Cash spent"]}'
+    ws.cell(r + 1, 1).value = 'Owed by customers at Sunday'
+    ws[f'B{r + 1}'] = cur['owed_total']
+    ws[f'C{r + 1}'] = (f'=B{r + 1}-B{row["rev"]}+B{row["Collected from customers"]}'
+                       f'+B{row["Client fuel deducted by credit note"]}')
+    for rr in (r, r + 1):
+        ws[f'B{rr}'].font = Font(name=FONT, color='0000FF')
+        ws[f'D{rr}'] = f'=B{rr}-C{rr}'
+        for col in 'BCD':
+            ws[f'{col}{rr}'].number_format = MONEY
+    note(r, 'This week: Cash & Banks total in the daily report at Sunday. Last week: worked back with this week\'s collections and cash spent.', 5, W)
+    note(r + 1, 'This week: Customers total at Sunday. Last week: worked back with this week\'s revenue, collections and credit notes.', 5, W)
+    for key, good_up in (('Trips completed', True), ('...of which with no value yet', False), ('Km logged', True),
+                         ('Collected from customers', True), ('cash', True), ('owed', False)):
+        ref = f'D{row[key]}'
+        ws.conditional_formatting.add(ref, CellIsRule(operator='greaterThan', formula=['0'], font=green if good_up else red))
+        ws.conditional_formatting.add(ref, CellIsRule(operator='lessThan', formula=['0'], font=red if good_up else green))
+    r += 3
 
-    def line(label, fmaker):
-        nonlocal r
-        co.cell(r, 1).value = label
-        for c, (s, e) in (('B', (S + TW[0], S + TW[1])), ('C', (S + LW[0], S + LW[1]))):
-            co[f'{c}{r}'] = fmaker(s, e, c)
-            co[f'{c}{r}'].number_format = MONEY
-        co[f'D{r}'] = f'=B{r}-C{r}'
-        co[f'D{r}'].number_format = MONEY
-        co[f'E{r}'] = f'=IF(C{r}=0,"",(B{r}-C{r})/ABS(C{r}))'
-        co[f'E{r}'].number_format = '+0.0%;-0.0%;-'
-        r += 1
+    # ---------- trucks
+    section(r, 'TRUCKS (contribution = revenue less trip costs and repairs)')
+    heads(r + 1, ['Truck', 'Trips', 'Revenue', 'Trip costs', 'Repairs', 'Contribution', 'Last week', 'Change'])
+    r += 2
+    status = {n: s for n, s, _ in cur['trucks']}
+    active = [n for n, _, _ in cur['trucks'] if n in by_truck]
+    idle = [f'{n} ({status[n]})' for n, _, _ in cur['trucks'] if n not in by_truck and n != 'Subcontracted Vehicles']
 
-    section('TRUCK COSTS')
+    def truck_contrib(n, k):
+        rev = sum(t[6] for t in trips if t[2] == n and wk(t[0]) == k)
+        cst = sum(c[3] for c in costs if c[1] == n and c[8] == 'Truck' and wk(c[0]) == k)
+        return rev - cst
+    active.sort(key=lambda n: -truck_contrib(n, 'W'))
     t0 = r
-    for cat in truck_cats:
-        line(cat, lambda s, e, c, cat=cat: f'=SUMIFS({rng(C, "D")},{rng(C, "C")},"{cat}",{rng(C, "I")},"Truck",{win(C, s, e)})')
-    t1 = r - 1
-    line('Total truck costs', lambda s, e, c: f'=SUM({c}{t0}:{c}{t1})')
-    for c in range(1, 6):
-        co.cell(r - 1, c).font = Font(name=FONT, bold=True)
-    section('COMPANY OVERHEADS')
-    o0 = r
-    line('Fixed overheads accrued (Assumptions tab)',
-         lambda s, e, c: f'=SUMIFS({rng(D, "G")},{win(D, s, e)})-SUMIFS({rng(C, "H")},{rng(C, "I")},"Overhead",{win(C, s, e)})')
-    for cat in sorted({c_[2] for c_ in costs if c_[8] == 'Overhead'}):
-        line(cat, lambda s, e, c, cat=cat: f'=SUMIFS({rng(C, "H")},{rng(C, "C")},"{cat}",{rng(C, "I")},"Overhead",{win(C, s, e)})')
-    o1 = r - 1
-    line('Total company overheads', lambda s, e, c: f'=SUM({c}{o0}:{c}{o1})')
-    for c in range(1, 6):
-        co.cell(r - 1, c).font = Font(name=FONT, bold=True)
-    co.cell(r, 1).value = 'Check: totals agree with Week Summary (should be 0)'
-    co.cell(r, 2).value = (f'=ROUND(B{t1 + 1}+B{r - 1}-({S}B{rowof["Trip costs (fuel, allowances, tolls, fines, compliance)"]}'
-                           f'+{S}B{rowof["Repairs"]}+{S}B{rowof["Company overheads"]}),2)')
-    r += 2
-    co.cell(r, 1).value = 'LARGEST COSTS THIS WEEK'
-    for c in range(1, 6):
-        co.cell(r, c).fill = SUB_FILL
-        co.cell(r, c).font = Font(name=FONT, bold=True, color='1F3864')
-    r += 1
-    for c, h in enumerate(['Date', 'Applies to', 'Category', 'Amount ($)', 'Description'], 1):
-        co.cell(r, c).value = h
-    style_header(co, r, 1, 5)
-    r += 1
-    top = sorted([c_ for c_ in costs if c_[0] >= w_start], key=lambda x: -x[3])[:10]
-    for c_ in top:
-        co.cell(r, 1).value = datetime(c_[0].year, c_[0].month, c_[0].day)
-        co.cell(r, 1).number_format = 'd mmm'
-        co.cell(r, 2).value, co.cell(r, 3).value, co.cell(r, 4).value, co.cell(r, 5).value = c_[1], c_[2], c_[3], c_[5]
-        co.cell(r, 4).number_format = MONEY
+    for n in active:
+        ws.cell(r, 1).value = n
+        s, e = WK['B']
+        ws[f'B{r}'] = f'=COUNTIFS({rng(T, "C")},$A{r},{win(T, s, e)})'
+        ws[f'C{r}'] = f'=SUMIFS({rng(T, "G")},{rng(T, "C")},$A{r},{win(T, s, e)})'
+        ws[f'D{r}'] = (f'=SUMIFS({rng(C, "D")},{rng(C, "B")},$A{r}{TRUCK},{win(C, s, e)})'
+                       f'-E{r}')
+        ws[f'E{r}'] = f'=SUMIFS({rng(C, "D")},{rng(C, "B")},$A{r}{TRUCK}{REP},{win(C, s, e)})'
+        ws[f'F{r}'] = f'=C{r}-D{r}-E{r}'
+        s, e = WK['C']
+        ws[f'G{r}'] = (f'=SUMIFS({rng(T, "G")},{rng(T, "C")},$A{r},{win(T, s, e)})'
+                       f'-SUMIFS({rng(C, "D")},{rng(C, "B")},$A{r}{TRUCK},{win(C, s, e)})')
+        ws[f'H{r}'] = f'=F{r}-G{r}'
+        ws[f'B{r}'].number_format = NUM
+        for col in 'CDEFGH':
+            ws[f'{col}{r}'].number_format = MONEY
         r += 1
-    set_widths(co, [40, 14, 14, 13, 60])
+    t1 = r - 1
+    ws.cell(r, 1).value = 'All trucks'
+    for col in 'BCDEFGH':
+        ws[f'{col}{r}'] = f'=SUM({col}{t0}:{col}{t1})'
+        ws[f'{col}{r}'].number_format = NUM if col == 'B' else MONEY
+    for c in range(1, W + 1):
+        ws.cell(r, c).font = Font(name=FONT, bold=True)
+        ws.cell(r, c).fill = TOTAL_FILL
+        ws.cell(r, c).border = Border(top=THIN)
+    truck_total = r
+    ws.conditional_formatting.add(f'F{t0}:F{t1}', CellIsRule(operator='lessThan', formula=['0'], font=red))
+    ws.conditional_formatting.add(f'H{t0}:H{t1}', CellIsRule(operator='lessThan', formula=['0'], font=red))
+    ws.conditional_formatting.add(f'H{t0}:H{t1}', CellIsRule(operator='greaterThan', formula=['0'], font=green))
+    r += 1
+    if idle:
+        note(r, 'No trips or costs in either week: ' + ', '.join(idle) + '.', 1, W)
+        r += 1
+    r += 1
 
-    # ---- Exceptions
-    ex = sheets['Exceptions']
-    title(ex, f'Open exceptions at {week_end:%d %b %Y}',
-          'From the daily fill for the month. "This week" marks items dated in the week; the rest were already open.')
-    for c, h in enumerate(['Type', 'When', 'Item', 'Amount ($)'], 1):
-        ex.cell(4, c).value = h
-    style_header(ex, 4, 1, 4)
+    # ---------- customers
+    section(r, 'CUSTOMERS')
+    heads(r + 1, ['Customer', 'Trips', 'Revenue', 'Last week', 'Collected', 'Last week', 'Owed at Sunday'])
+    r += 2
+    cust_names = set(by_cust) | {x[1] for x in receipts if x[1]} | {c[9] for c in costs if c[9]}
+    cust_names = sorted(cust_names, key=lambda k: (-by_cust.get(k, {'W': 0})['W'], -by_cust.get(k, {'P': 0})['P'], k))
+    c0 = r
+    for n in cust_names:
+        ws.cell(r, 1).value = n
+        (s, e), (s2, e2) = WK['B'], WK['C']
+        ws[f'B{r}'] = f'=COUNTIFS({rng(T, "D")},$A{r},{win(T, s, e)})'
+        ws[f'C{r}'] = f'=SUMIFS({rng(T, "G")},{rng(T, "D")},$A{r},{win(T, s, e)})'
+        ws[f'D{r}'] = f'=SUMIFS({rng(T, "G")},{rng(T, "D")},$A{r},{win(T, s2, e2)})'
+        ws[f'E{r}'] = f'=SUMIFS({rng(R, "C")},{rng(R, "B")},$A{r},{win(R, s, e)})'
+        ws[f'F{r}'] = f'=SUMIFS({rng(R, "C")},{rng(R, "B")},$A{r},{win(R, s2, e2)})'
+        owed = cur['owed'].get(n)
+        if owed is not None:
+            ws[f'G{r}'] = owed
+            ws[f'G{r}'].font = Font(name=FONT, color='0000FF')
+        ws[f'B{r}'].number_format = NUM
+        for col in 'CDEFG':
+            ws[f'{col}{r}'].number_format = MONEY
+        r += 1
+    c1 = r - 1
+    ws.cell(r, 1).value = 'All customers'
+    for col in 'BCDEF':
+        ws[f'{col}{r}'] = f'=SUM({col}{c0}:{col}{c1})'
+        ws[f'{col}{r}'].number_format = NUM if col == 'B' else MONEY
+    ws[f'G{r}'] = cur['owed_total']
+    ws[f'G{r}'].number_format = MONEY
+    for c in range(1, W + 1):
+        ws.cell(r, c).font = Font(name=FONT, bold=True)
+        ws.cell(r, c).fill = TOTAL_FILL
+        ws.cell(r, c).border = Border(top=THIN)
+    cust_total = r
+    r += 1
+    note(r, 'Owed at Sunday is from the Customers tab of the daily report; it includes every customer, so the total can exceed the rows shown.', 1, W)
+    r += 2
+
+    # ---------- biggest costs
+    section(r, 'BIGGEST COSTS THIS WEEK (fuel excluded: it follows the trips)')
+    heads(r + 1, ['Truck or overhead', 'Date', 'Amount', 'Category', '', 'Description'])
+    ws.merge_cells(start_row=r + 1, start_column=4, end_row=r + 1, end_column=5)
+    ws.merge_cells(start_row=r + 1, start_column=6, end_row=r + 1, end_column=W)
+    for c in (2, 4, 6):
+        ws.cell(r + 1, c).alignment = Alignment(horizontal='left', indent=1 if c == 4 else 0)
+    r += 2
+    big = [c for c in costs if wk(c[0]) == 'W' and 'fuel' not in (c[2] or '').lower()]
+    for c in sorted(big, key=lambda x: -x[3])[:5]:
+        ws.cell(r, 1).value = c[1]
+        ws.cell(r, 2).value = datetime(c[0].year, c[0].month, c[0].day)
+        ws.cell(r, 2).number_format = 'ddd d mmm'
+        ws.cell(r, 2).alignment = Alignment(horizontal='left')
+        ws.cell(r, 3).value = c[3]
+        ws.cell(r, 3).number_format = MONEY
+        ws.cell(r, 4).value = c[2]
+        ws.merge_cells(start_row=r, start_column=4, end_row=r, end_column=5)
+        ws.cell(r, 4).alignment = Alignment(indent=1)
+        ws.cell(r, 6).value = c[5]
+        ws.merge_cells(start_row=r, start_column=6, end_row=r, end_column=W)
+        r += 1
+    r += 1
+
+    # ---------- needs attention
+    section(r, 'NEEDS ATTENTION')
+    r += 1
     excs = summary.get('exceptions', {})
+    grouped = {}
+    for kind, items in excs.items():
+        hit = next((x for x in ATTENTION if x[0].lower() in kind.lower()), None)
+        key = hit[1] if hit else None
+        grouped.setdefault(key, {'hit': hit, 'items': []})['items'] += items
+    n_lines = 0
+    for match, label, action in ATTENTION:
+        g = grouped.get(label)
+        if not g:
+            continue
+        items = g['items']
+        dated = [re.search(r'\d{4}-\d{2}-\d{2}', i) for i in items]
+        new = sum(1 for m_ in dated if m_ and w_start <= to_date(m_.group(0)) <= week_end)
+        amts = [float(m_.group(1).replace(',', '')) for m_ in (re.search(r'\$(-?[\d,]+\.\d{2})', i) for i in items) if m_]
+        if match == 'Completed trip with no revenue':
+            ex = []
+            for i in items:
+                t = all_trips.get(i.split()[0])
+                ex.append(f'{i.split()[0]} {t[3]}, {t[8]:,.0f} km' if t else i.split()[0])
+            detail = '; '.join(ex[:4]) + ('; ...' if len(ex) > 4 else '')
+        else:
+            detail = ''
+        text = (f'{len(items)} {label}' + (f' ({new} this week)' if new else '')
+                + (f', {fm(sum(amts))}' if amts else '') + f': {action}.' + (f' {detail}' if detail else ''))
+        ws.cell(r, 1).value = '•  ' + text
+        ws.cell(r, 1).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=W)
+        ws.row_dimensions[r].height = 30 if len(text) > 125 else 16
+        r += 1
+        n_lines += 1
+    other = sum(len(v['items']) for k, v in grouped.items() if k is None)
+    if other:
+        note(r, f'{other} other notes (reversals, re-filed categories, vehicles outside the fleet list) are in the daily report.', 1, W)
+        r += 1
+    if not n_lines and not other:
+        ws.cell(r, 1).value = 'Nothing open.'
+        r += 1
+    r += 1
 
-    def rank(kind):
-        for i, k in enumerate(EXCEPTION_ORDER):
-            if k.lower() in kind.lower():
-                return i
-        return len(EXCEPTION_ORDER)
+    # ---------- month to date
+    section(r, f'MONTH TO DATE AT {week_end:%d %b %Y}'.upper())
+    mtd = cur['mtd']
+    want = [('Revenue', 'Revenue MTD'), ('Net profit', 'Net profit MTD'), ('Margin', 'Net margin'),
+            ('Collected', 'Collected MTD'), ('Cash & bank', 'Cash & bank balance')]
+    heads(r + 1, [''] + [w_[0] for w_ in want])
+    ws.cell(r + 2, 1).value = f'1 to {week_end:%d %b}'
+    for c in range(1, len(want) + 1):
+        v = mtd.get(want[c - 1][1])
+        cell = ws.cell(r + 2, c + 1)
+        cell.value = v
+        cell.number_format = PCT if 'margin' in want[c - 1][1].lower() else MONEY
+        cell.font = Font(name=FONT, bold=True, color='0000FF')
+    r += 3
+    note(r, (f'From the Truck Summary of the daily report for {cur["month_start"]:%B %Y}, frozen at {week_end:%d %b}. '
+             'Revenue counts on the trip completion date; running costs and fixed overheads accrue daily. '
+             'Not included: anything not recorded in Wilogix or Vuma, depreciation until it is entered on the Assumptions tab, and Zoho Books.'),
+         1, W, height=40)
 
-    r = 5
-    counts = []
-    for kind in sorted(excs, key=rank):
-        n_week = 0
-        for item in excs[kind]:
-            m = re.search(r'\d{4}-\d{2}-\d{2}', item)
-            d = to_date(m.group(0)) if m else None
-            when = 'This week' if d and w_start <= d <= week_end else ('Earlier' if d else '')
-            n_week += when == 'This week'
-            amt = re.search(r'\$(-?[\d,]+\.\d{2})', item)
-            ex.cell(r, 1).value, ex.cell(r, 2).value, ex.cell(r, 3).value = kind, when, item
-            if amt:
-                ex.cell(r, 4).value = float(amt.group(1).replace(',', ''))
-                ex.cell(r, 4).number_format = MONEY
-            if when == 'This week':
-                ex.cell(r, 2).font = Font(name=FONT, bold=True, color='C00000')
-            r += 1
-        counts.append((kind, len(excs[kind]), n_week))
-    if not excs:
-        ex.cell(5, 1).value = 'No exceptions (or no summary file was given).'
-    set_widths(ex, [60, 11, 80, 12])
-    for rr in range(5, r):
-        for c in (1, 3):
-            ex.cell(rr, c).alignment = Alignment(wrap_text=True, vertical='top')
+    # ---------- page set-up
+    set_widths(ws, [34, 12, 12, 12, 12, 13, 12, 13])
+    ws.sheet_view.showGridLines = False
+    ws.page_setup.orientation = 'portrait'
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_area = f'A1:H{r}'
+    ws.page_margins.left = ws.page_margins.right = 0.4
+    for rr in range(1, r + 1):
+        for c in range(1, W + 1):
+            cell = ws.cell(rr, c)
+            if cell.value is not None and cell.font.name != FONT:
+                f = cell.font
+                cell.font = Font(name=FONT, bold=f.bold, italic=f.italic, size=f.size, color=f.color)
+            if cell.value is not None and cell.font.name == FONT and cell.font.size is None:
+                pass
 
-    for sh in wb.worksheets:
-        font_all(sh)
-        sh.page_setup.orientation = 'landscape'
-        sh.page_setup.fitToWidth, sh.page_setup.fitToHeight = 1, 0
-        sh.sheet_properties.pageSetUpPr.fitToPage = True
+    # ---------- checks (hidden)
+    ck = sheets['Checks']
+    ck['A1'], ck['B1'] = 'Check', 'Difference (must be 0)'
+    style_header(ck, 1, 1, 2)
+    checks = [
+        ('Trucks contribution total equals P&L revenue less trip costs and repairs',
+         f"=ROUND('Weekly Report'!F{truck_total}-('Weekly Report'!B{row['rev']}-'Weekly Report'!B{row['trip']}-'Weekly Report'!B{row['rep']}),2)"),
+        ('Trucks last-week contribution equals last week P&L',
+         f"=ROUND('Weekly Report'!G{truck_total}-('Weekly Report'!C{row['rev']}-'Weekly Report'!C{row['trip']}-'Weekly Report'!C{row['rep']}),2)"),
+        ('Customers revenue equals P&L revenue (this week)', f"=ROUND('Weekly Report'!C{cust_total}-'Weekly Report'!B{row['rev']},2)"),
+        ('Customers revenue equals P&L revenue (last week)', f"=ROUND('Weekly Report'!D{cust_total}-'Weekly Report'!C{row['rev']},2)"),
+        ('Customers collected equals Activity collected (this week)',
+         f"=ROUND('Weekly Report'!E{cust_total}-'Weekly Report'!B{row['Collected from customers']},2)"),
+        ('Net profit for the week equals the sum of daily net profit in the daily report',
+         f"=ROUND('Weekly Report'!B{row['net']}-SUMIFS({rng(D, 'H')},{win(D, chr(39) + 'Weekly Report' + chr(39) + '!$B$3', chr(39) + 'Weekly Report' + chr(39) + '!$C$3')}),2)"),
+    ]
+    for i, (lab, f) in enumerate(checks, 2):
+        ck.cell(i, 1).value, ck.cell(i, 2).value = lab, f
+    set_widths(ck, [90, 22])
+    for n in data_names:
+        font_all(sheets[n])
+        sheets[n].sheet_state = 'hidden'
+    wb.active = 0
     wb.save(a.out)
 
     out = {
         'week': f'{w_start} to {week_end}', 'previous_week': f'{p_start} to {p_end}', 'output': a.out,
         'monthly_workbooks': [m['path'] for m in months],
-        'rows': {'trips': len(trips), 'costs': len(costs), 'receipts': len(receipts), 'days': len(daily), 'truck_days': len(truck_days)},
-        'exception_counts': [{'type': k, 'open': n, 'this_week': w} for k, n, w in counts],
-        'week_summary_rows': rowof,
+        'headline': headline,
+        'rows': {'trips': len(trips), 'costs': len(costs), 'receipts': len(receipts), 'days': len(daily)},
+        'checks_sheet': 'Checks (hidden): every value in column B must be 0 after recalculation',
     }
     print(json.dumps(out, indent=1, default=str))
 

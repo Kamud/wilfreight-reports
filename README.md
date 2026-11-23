@@ -122,11 +122,12 @@ The fortnight is `:week_start - 7` to `:week_end`.
    - Recalculate it with the xlsx skill's `recalc.py` (zero errors).
 2. `python3 weekly_report.py build --week-end <:week_end> --monthly "out/weekly/month <YYYY-MM>.xlsx" [--monthly "out/weekly/month <earlier YYYY-MM>.xlsx"] --summary out/weekly/summary_<YYYY-MM of :week_end>.json --out "out/Saraquel Weekly Truck Report <:week_end>.xlsx"`
 3. Recalculate the weekly workbook with `recalc.py` (zero errors).
-4. Check: the "should be 0" cells on By Truck and Costs are 0. The month workbook checks from the daily run also apply.
+4. Check: every line on the hidden Checks tab is 0. The month workbook checks from the daily run also apply.
 
-Tabs: Week Summary (this week, last week, change, change %, month to date at Sunday), By Truck, By Customer, By Day,
-Costs (by category and the 10 largest costs), Exceptions (open at Sunday; the ones dated this week are marked),
-and the data tabs it calculates from. The week dates are blue inputs on Week Summary, so the tabs can be re-cut.
+One page, "Weekly Report": a one-line headline; profit and loss for both weeks with the main reason for each change;
+activity and cash (trips, trips with no value yet, km, collected, cash spent, credit-note fuel, cash and customer balances
+at Sunday); trucks that worked or spent; customers; the five biggest non-fuel costs; what needs attention; month to date.
+The data tabs and a Checks tab are hidden. Every line on Checks must be 0 after recalculation.
 
 Limits: last week's cash and customer balances are worked back from Sunday's balances using this week's collections,
 cash spent and credit notes. When the comparison week falls in the previous month, that month uses the current
