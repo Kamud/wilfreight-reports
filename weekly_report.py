@@ -15,9 +15,9 @@ It applies no rules of its own: the logs come from daily-report workbooks made b
      the previous month) and the fill_report.py JSON summary for the month holding Sunday:
        python3 weekly_report.py build --week-end 2026-11-22 --monthly "out/weekly/month 2026-11.xlsx" \
            [--monthly "out/weekly/month 2026-10.xlsx"] --summary out/weekly/summary_2026-11.json \
-           --out "out/Saraquel Weekly Truck Report 2026-11-22.xlsx"
+           [--out "out/Wilfreight Logistics Weekly Report 16-22 November 2026.xlsx"]
   3. Recalculate the weekly workbook (xlsx skill recalc.py), then:
-       python3 weekly_report.py verify --weekly "out/Saraquel Weekly Truck Report 2026-11-22.xlsx" \
+       python3 weekly_report.py verify --weekly "out/Wilfreight Logistics Weekly Report 16-22 November 2026.xlsx" \
            --monthly "out/weekly/month 2026-11.xlsx"
      It checks the "should be 0" block on Week Summary and compares month to date, cash and
      customer balances with the daily-report workbook.
@@ -64,6 +64,14 @@ def to_date(v):
     if isinstance(v, str) and re.match(r'\d{4}-\d{2}-\d{2}', v):
         return datetime.strptime(v[:10], '%Y-%m-%d').date()
     return None
+
+
+def period_text(s, e):
+    if (s.year, s.month) == (e.year, e.month):
+        return f'{s.day}-{e.day} {e:%B %Y}'
+    if s.year == e.year:
+        return f'{s.day} {s:%B} - {e.day} {e:%B %Y}'
+    return f'{s.day} {s:%B %Y} - {e.day} {e:%B %Y}'
 
 
 def dt(d):
@@ -254,7 +262,11 @@ def cmd_build(a):
             acc_flow[c[4]] = acc_flow.get(c[4], 0) - float(c[3])
         if c[11]:
             cust_flow[c[11]] = cust_flow.get(c[11], 0) - float(c[3])
-    rate = json.load(open(a.config, encoding='utf-8'))['bakers_inn_rate_per_km']
+    cfg = json.load(open(a.config, encoding='utf-8'))
+    rate = cfg['bakers_inn_rate_per_km']
+    company = cfg.get('company_name', 'Wilfreight Logistics')
+    if not a.out:
+        a.out = f'out/{company} Weekly Report {period_text(w_start, week_end)}.xlsx'
     for t in trips:
         g = t[6]
         val = round(float(t[8] or 0) * rate, 2) if isinstance(g, str) and g.startswith('=') else float(g or 0)
@@ -689,7 +701,9 @@ def cmd_build(a):
 
     # ================= Week Summary
     W = 8
-    title(ws, 'Saraquel Logistics: weekly truck report')
+    ws['A1'] = (f'="{company} Weekly Report "&IF(MONTH(B3)=MONTH(C3),TEXT(B3,"d")&"-"&TEXT(C3,"d mmmm yyyy"),'
+                f'IF(YEAR(B3)=YEAR(C3),TEXT(B3,"d mmmm")&" - "&TEXT(C3,"d mmmm yyyy"),TEXT(B3,"d mmmm yyyy")&" - "&TEXT(C3,"d mmmm yyyy")))')
+    ws['A1'].font = Font(name=FONT, bold=True, size=14, color='1F3864')
     ws['A2'] = (f'=TEXT({TW[0]},"ddd d mmm")&" to "&TEXT({TW[1]},"ddd d mmm yyyy")&", compared with "'
                 f'&TEXT({LW[0]},"d mmm")&" to "&TEXT({LW[1]},"d mmm")&". USD."')
     ws['A2'].font = Font(name=FONT, italic=True, color='595959')
@@ -1047,7 +1061,7 @@ def main():
     b.add_argument('--monthly', action='append', required=True)
     b.add_argument('--summary')
     b.add_argument('--config', default='config.json')
-    b.add_argument('--out', required=True)
+    b.add_argument('--out', help='default: out/<company> Weekly Report <period>.xlsx, e.g. "16-22 November 2026"')
     v = sub.add_parser('verify')
     v.add_argument('--weekly', required=True)
     v.add_argument('--monthly', required=True)

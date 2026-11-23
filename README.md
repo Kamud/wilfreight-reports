@@ -20,7 +20,7 @@ On the 1st of a month, report the whole previous month.
    into `data/trips.txt`, `data/fuel.txt`, `data/expenses.txt`, `data/ledger.txt` (one record per line).
 2. Optional: write `data/fuel_rules.json` as `{"<Wilogix client name>": "<Fuel treatment>"}` from the
    Client rules tab of the "Willfreight Report Rules" sheet. Without it, `config.json` is used.
-3. `python3 fill_report.py --data data --month-start :start --fuel-rules data/fuel_rules.json --out "out/Saraquel Daily Truck Report YYYY-MM-DD.xlsx"`
+3. `python3 fill_report.py --data data --month-start :start --fuel-rules data/fuel_rules.json --out "out/Wilfreight Logistics Daily Truck Report YYYY-MM-DD.xlsx"`
 4. Recalculate the output with the xlsx skill's `recalc.py`; it must report zero errors.
 5. Check: the summary's `cash_expenses_total` equals the Vuma expense total for the period, `transfers_total`
    equals the Vuma transfer plus disbursement total, and Truck Summary revenue equals `revenue_total`.
@@ -123,9 +123,10 @@ Logs start at the earlier of the comparison Monday and the 1st of `:week_end`'s 
    - Freeze it BEFORE recalculating, so a Monday run does not accrue Monday's costs:
      `python3 weekly_report.py freeze --workbook "out/weekly/month <YYYY-MM>.xlsx" --as-at <:week_end, or month end for an earlier month>`
    - Recalculate it with the xlsx skill's `recalc.py` (zero errors).
-2. `python3 weekly_report.py build --week-end <:week_end> --monthly "out/weekly/month <YYYY-MM>.xlsx" [--monthly "out/weekly/month <earlier YYYY-MM>.xlsx"] --summary out/weekly/summary_<YYYY-MM of :week_end>.json --out "out/Saraquel Weekly Truck Report <:week_end>.xlsx"`
+2. `python3 weekly_report.py build --week-end <:week_end> --monthly "out/weekly/month <YYYY-MM>.xlsx" [--monthly "out/weekly/month <earlier YYYY-MM>.xlsx"] --summary out/weekly/summary_<YYYY-MM of :week_end>.json`
+   It names the file `out/Wilfreight Logistics Weekly Report <period>.xlsx`, e.g. `16-22 November 2026` (or `27 October - 2 November 2026`), and prints the path.
 3. Recalculate the weekly workbook with `recalc.py` (zero errors).
-4. `python3 weekly_report.py verify --weekly "out/Saraquel Weekly Truck Report <:week_end>.xlsx" --monthly "out/weekly/month <YYYY-MM of :week_end>.xlsx"`
+4. `python3 weekly_report.py verify --weekly "<the path build printed>" --monthly "out/weekly/month <YYYY-MM of :week_end>.xlsx"`
    must print `"status": "ok"`: the CHECKS block on Week Summary is all 0, and month to date, cash and customer balances
    equal the daily report.
 
