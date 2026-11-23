@@ -107,28 +107,31 @@ overheads are monthly accruals and are not spread across days there; see Truck S
 
 ## Weekly report (Monday morning)
 
-Covers Monday to Sunday of the week just ended, compared with the week before. It applies no rules of its own:
-it summarises daily-report workbooks made by `fill_report.py`, so the daily and weekly figures always agree.
+Covers Monday to Sunday of the week just ended, compared with the week before. The workbook holds its own data:
+the daily report's log tabs (Trips, Expense Log, Receipts Log, Transfers Log) from the 1st of the month (or from the
+comparison Monday, if earlier) to Sunday, plus Cash & Banks, Customers and Assumptions. Every summary figure is a
+formula over the logs, so a manual edit to a log line flows through. The only typed numbers outside the logs are
+inputs: opening balances at the first log date (worked back from the daily report's Sunday balances) and Assumptions.
 
-Dates: `:week_end` is yesterday (Sunday), `:week_start` is 6 days earlier, and the comparison week is the 7 days before that.
-The fortnight is `:week_start - 7` to `:week_end`.
+Dates: `:week_end` is yesterday (Sunday), `:week_start` is 6 days earlier, the comparison week is the 7 days before.
+Logs start at the earlier of the comparison Monday and the 1st of `:week_end`'s month.
 
-1. For each month the fortnight touches (one, or two across a month end):
+1. For each month the logs touch (one, or two when the comparison week starts in the previous month):
    - Extract with the two queries above. For the month holding `:week_end`, use `:start` = its first day and `:end` = `:week_end`.
      For an earlier month, use the whole month. Save into `data/<YYYY-MM>/` and write `fuel_rules.json` there as for the daily run.
    - `python3 fill_report.py --data data/<YYYY-MM> --month-start <YYYY-MM-01> --fuel-rules data/<YYYY-MM>/fuel_rules.json --out "out/weekly/month <YYYY-MM>.xlsx" > out/weekly/summary_<YYYY-MM>.json`
-   - Freeze it at its last day, BEFORE recalculating, so a Monday run does not accrue Monday's costs:
+   - Freeze it BEFORE recalculating, so a Monday run does not accrue Monday's costs:
      `python3 weekly_report.py freeze --workbook "out/weekly/month <YYYY-MM>.xlsx" --as-at <:week_end, or month end for an earlier month>`
    - Recalculate it with the xlsx skill's `recalc.py` (zero errors).
 2. `python3 weekly_report.py build --week-end <:week_end> --monthly "out/weekly/month <YYYY-MM>.xlsx" [--monthly "out/weekly/month <earlier YYYY-MM>.xlsx"] --summary out/weekly/summary_<YYYY-MM of :week_end>.json --out "out/Saraquel Weekly Truck Report <:week_end>.xlsx"`
 3. Recalculate the weekly workbook with `recalc.py` (zero errors).
-4. Check: every line on the hidden Checks tab is 0. The month workbook checks from the daily run also apply.
+4. `python3 weekly_report.py verify --weekly "out/Saraquel Weekly Truck Report <:week_end>.xlsx" --monthly "out/weekly/month <YYYY-MM of :week_end>.xlsx"`
+   must print `"status": "ok"`: the CHECKS block on Week Summary is all 0, and month to date, cash and customer balances
+   equal the daily report.
 
-One page, "Weekly Report": a one-line headline; profit and loss for both weeks with the main reason for each change;
-activity and cash (trips, trips with no value yet, km, collected, cash spent, credit-note fuel, cash and customer balances
-at Sunday); trucks that worked or spent; customers; the five biggest non-fuel costs; what needs attention; month to date.
-The data tabs and a Checks tab are hidden. Every line on Checks must be 0 after recalculation.
+Tabs: Week Summary (headline; activity, profit and loss, key ratios and cash for both weeks with change, change % and the
+biggest change; trucks; top five customers; five biggest non-fuel costs; needs attention; month to date; checks),
+By Truck, By Customer, By Day, Costs, Exceptions, the four logs, Cash & Banks, Customers, Assumptions.
+The Monday in Week Summary B3 is the one input that sets both weeks.
 
-Limits: last week's cash and customer balances are worked back from Sunday's balances using this week's collections,
-cash spent and credit notes. When the comparison week falls in the previous month, that month uses the current
-template's running-cost and overhead assumptions.
+Limit: when the comparison week falls in the previous month, the current Assumptions are used for it too.
