@@ -1,5 +1,6 @@
 {
   "_about": "Mappings from Wilogix and Vuma names to the names used in the daily truck report workbook. Edit here when a name changes; spelling must match the workbook lists exactly.",
+  "company_name": "Wilfreight Logistics",
   "bakers_inn_rate_per_km": 0.9,
   "rate_per_km_customers": [
     "Bakers Inn"

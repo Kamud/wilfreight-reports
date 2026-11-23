@@ -335,6 +335,8 @@ def main():
     stamp = date.today().strftime('%d %b %Y')
     month_name = month_start.strftime('%B %Y')
     wb['Start Here']['A2'].value = f'{month_name}: filled automatically from Wilogix and Vuma on {stamp}. USD.'
+    if cfg.get('company_name'):
+        wb['Start Here']['A1'].value = f"{cfg['company_name']}: Daily Truck Profit Report"
     exp_ws['A3'].value = (f'Filled automatically on {stamp}: cash expenses from Vuma, client fuel from Wilogix fuel logs. '
                           'Declined and reversed Vuma expenses are left out.')
 

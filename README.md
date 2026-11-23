@@ -20,7 +20,7 @@ On the 1st of a month, report the whole previous month.
    into `data/trips.txt`, `data/fuel.txt`, `data/expenses.txt`, `data/ledger.txt` (one record per line).
 2. Optional: write `data/fuel_rules.json` as `{"<Wilogix client name>": "<Fuel treatment>"}` from the
    Client rules tab of the "Willfreight Report Rules" sheet. Without it, `config.json` is used.
-3. `python3 fill_report.py --data data --month-start :start --fuel-rules data/fuel_rules.json --out "out/Saraquel Daily Truck Report YYYY-MM-DD.xlsx"`
+3. `python3 fill_report.py --data data --month-start :start --fuel-rules data/fuel_rules.json --out "out/Wilfreight Logistics Daily Truck Report YYYY-MM-DD.xlsx"`
 4. Recalculate the output with the xlsx skill's `recalc.py`; it must report zero errors.
 5. Check: the summary's `cash_expenses_total` equals the Vuma expense total for the period, `transfers_total`
    equals the Vuma transfer plus disbursement total, and Truck Summary revenue equals `revenue_total`.
@@ -104,3 +104,35 @@ overheads are monthly accruals and are not spread across days there; see Truck S
 - Opening balances (Cash & Banks) and customer balances at month start (Customers), once a month in the template.
 - Truck running costs and fixed overheads on the Assumptions tab.
 - Anything not recorded in Wilogix or Vuma will not appear. Record it at the source rather than in the workbook.
+
+## Weekly report (Monday morning)
+
+Covers Monday to Sunday of the week just ended, compared with the week before. The workbook holds its own data:
+the daily report's log tabs (Trips, Expense Log, Receipts Log, Transfers Log) from the 1st of the month (or from the
+comparison Monday, if earlier) to Sunday, plus Cash & Banks, Customers and Assumptions. Every summary figure is a
+formula over the logs, so a manual edit to a log line flows through. The only typed numbers outside the logs are
+inputs: opening balances at the first log date (worked back from the daily report's Sunday balances) and Assumptions.
+
+Dates: `:week_end` is yesterday (Sunday), `:week_start` is 6 days earlier, the comparison week is the 7 days before.
+Logs start at the earlier of the comparison Monday and the 1st of `:week_end`'s month.
+
+1. For each month the logs touch (one, or two when the comparison week starts in the previous month):
+   - Extract with the two queries above. For the month holding `:week_end`, use `:start` = its first day and `:end` = `:week_end`.
+     For an earlier month, use the whole month. Save into `data/<YYYY-MM>/` and write `fuel_rules.json` there as for the daily run.
+   - `python3 fill_report.py --data data/<YYYY-MM> --month-start <YYYY-MM-01> --fuel-rules data/<YYYY-MM>/fuel_rules.json --out "out/weekly/month <YYYY-MM>.xlsx" > out/weekly/summary_<YYYY-MM>.json`
+   - Freeze it BEFORE recalculating, so a Monday run does not accrue Monday's costs:
+     `python3 weekly_report.py freeze --workbook "out/weekly/month <YYYY-MM>.xlsx" --as-at <:week_end, or month end for an earlier month>`
+   - Recalculate it with the xlsx skill's `recalc.py` (zero errors).
+2. `python3 weekly_report.py build --week-end <:week_end> --monthly "out/weekly/month <YYYY-MM>.xlsx" [--monthly "out/weekly/month <earlier YYYY-MM>.xlsx"] --summary out/weekly/summary_<YYYY-MM of :week_end>.json`
+   It names the file `out/Wilfreight Logistics Weekly Report <period>.xlsx`, e.g. `16-22 November 2026` (or `27 October - 2 November 2026`), and prints the path.
+3. Recalculate the weekly workbook with `recalc.py` (zero errors).
+4. `python3 weekly_report.py verify --weekly "<the path build printed>" --monthly "out/weekly/month <YYYY-MM of :week_end>.xlsx"`
+   must print `"status": "ok"`: the CHECKS block on Week Summary is all 0, and month to date, cash and customer balances
+   equal the daily report.
+
+Tabs: Week Summary (headline; activity, profit and loss, key ratios and cash for both weeks with change, change % and the
+biggest change; trucks; top five customers; five biggest non-fuel costs; needs attention; month to date; checks),
+By Truck, By Customer, By Day, Costs, Exceptions, the four logs, Cash & Banks, Customers, Assumptions.
+The Monday in Week Summary B3 is the one input that sets both weeks.
+
+Limit: when the comparison week falls in the previous month, the current Assumptions are used for it too.
